@@ -1,0 +1,89 @@
+module VestingAgreement where
+
+import DA.Time (addRelTime)
+
+import VestingSchedule
+import CantonCoin
+
+-- A proposal the company offers to an employee. It only becomes a binding
+-- `VestingAgreement` once the employee accepts, so both parties are signatories
+-- of the agreement (neither can be bound without consenting).
+template VestingProposal
+  with
+    company: Party
+    employee: Party
+    schedule: VestingSchedule
+  where
+    signatory company
+    observer employee
+
+    ensure
+      not (null schedule.tranches)
+      && all (\t -> t.amount > 0.0) schedule.tranches
+
+    choice Accept : ContractId VestingAgreement
+      controller employee
+      do
+        startTime <- getTime
+        create VestingAgreement with
+          company
+          employee
+          schedule
+          released = []
+          startTime
+
+    choice Reject : ()
+      controller employee
+      do pure ()
+
+-- The active vesting agreement. The employee claims coin tranche-by-tranche as
+-- each one vests -- the company cannot withhold a vested tranche once it's
+-- unlocked; `released` records which tranche indices have already paid
+-- out so none can be claimed twice.
+template VestingAgreement
+  with
+    company: Party
+    employee: Party
+    schedule: VestingSchedule
+    released: [Int]
+    -- The instant the agreement was accepted -- cliff/tranche offsets count
+    -- from here, not from midnight of `schedule.startDate`. Using the calendar
+    -- date directly would make every offset trivially already elapsed as soon
+    -- as it's past midnight on that date, regardless of when the grant was
+    -- actually accepted.
+    startTime: Time
+  where
+    signatory company, employee
+
+    -- The employee claims the vested portion of the grant as Canton Coin;
+    -- the company's signature authorizes it but only the employee can invoke
+    -- this choice. Fails unless the cliff has passed, the tranche's own
+    -- duration has elapsed, and the tranche hasn't already been released.
+    choice ReleaseTranche : (ContractId VestingAgreement, ContractId CantonCoin)
+      with
+        trancheIndex: Int
+      controller employee
+      do
+        assertMsg "tranche already released"
+          (trancheIndex `notElem` released)
+
+        let indexed = zip [0 .. length schedule.tranches - 1] schedule.tranches
+        tranche <- case lookup trancheIndex indexed of
+          Some t -> pure t
+          None -> abort "invalid tranche index"
+
+        now <- getTime
+        let cliffTime = addRelTime startTime schedule.cliffDuration
+            unlockTime = addRelTime startTime tranche.offset
+
+        assertMsg "cliff has not been reached yet" (now >= cliffTime)
+        assertMsg "tranche has not vested yet" (now >= unlockTime)
+
+        coin <- create CantonCoin with
+          issuer = company
+          owner = employee
+          amount = tranche.amount
+
+        -- Archive this agreement and recreate it with the tranche marked paid.
+        updated <- create this with released = trancheIndex :: released
+        pure (updated, coin)

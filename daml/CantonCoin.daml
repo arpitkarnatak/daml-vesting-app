@@ -1,0 +1,29 @@
+module CantonCoin where
+
+-- A minimal, self-contained stand-in for Canton Coin (Amulet).
+--
+-- The production Canton Coin lives in the Splice `splice-amulet` package and
+-- implements the CIP-0056 token standard. That standard isn't a dependency of
+-- this intro project, so we model coin holdings the same way this project
+-- models other assets (see `IOU`): as an explicit contract between the issuer
+-- and the current owner. The vesting logic maps directly onto the real
+-- standard's transfer choices later.
+template CantonCoin
+  with
+    issuer: Party   -- who minted / stands behind the coin (here: the company)
+    owner: Party    -- who currently holds the coin
+    amount: Decimal
+  where
+    signatory issuer
+    observer owner
+    ensure amount > 0.0
+
+    -- The owner can move their coin to someone else. The issuer stays the
+    -- signatory of the resulting holding, mirroring how token standards keep
+    -- the issuer authorizing the asset.
+    choice Transfer : ContractId CantonCoin
+      with
+        newOwner: Party
+      controller owner
+      do
+        create this with owner = newOwner

@@ -1,0 +1,19 @@
+module VestingApp where
+
+import DA.Time (seconds)
+import VestingSchedule
+
+
+template Vesting
+    with
+        grantor: Party
+        receiver: Party
+        schedule: VestingSchedule
+    where
+        signatory grantor
+        observer receiver
+
+        ensure
+            not (null schedule.tranches)
+            && all (\t -> t.amount > 0.0) schedule.tranches
+            && schedule.cliffDuration >= seconds 0

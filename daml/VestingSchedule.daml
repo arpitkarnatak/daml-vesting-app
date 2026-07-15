@@ -1,0 +1,23 @@
+module VestingSchedule where
+
+import DA.Time (RelTime)
+
+-- A single unlock event in a vesting plan. `offset` is how much time must
+-- elapse after the schedule's `startDate` before this portion becomes
+-- claimable, and `amount` is the number of Canton Coins that unlock then.
+data Tranche = Tranche with
+    offset: RelTime   -- time after startDate before this tranche vests
+    amount: Decimal   -- Canton Coin released when it vests
+  deriving (Eq, Show, Ord)
+
+-- The full vesting plan: coins start unlocking only after the cliff, and each
+-- tranche unlocks at its own `offset` from `startDate`.
+data VestingSchedule = VestingSchedule with
+    startDate: Date
+    cliffDuration: RelTime   -- nothing vests before startDate + cliffDuration
+    tranches: [Tranche]      -- the unlock events, released one at a time
+  deriving (Eq, Show)
+
+-- Total number of Canton Coins granted across every tranche.
+totalShares : VestingSchedule -> Decimal
+totalShares schedule = sum (map (\t -> t.amount) schedule.tranches)

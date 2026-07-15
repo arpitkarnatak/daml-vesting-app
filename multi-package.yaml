@@ -1,0 +1,9 @@
+# Multi-package build config.
+#
+# Canton/Daml recommends keeping tests in a *separate* package that depends on
+# the template package (see the "Testing strategies" module — test DARs must
+# never be deployed to validators). This file lets `daml build`/`daml test`
+# orchestrate both the main package and the dedicated tests package.
+packages:
+  - .
+  - ./tests
