@@ -1,4 +1,4 @@
-# intro-parties — Token Vesting on Canton
+# Vesting App — Token Vesting on Canton
 
 A small Daml model that grants an employee Canton Coin on a **vesting schedule**: the
 company proposes a grant, the employee accepts, and the company then releases coin
