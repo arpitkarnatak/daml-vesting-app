@@ -55,7 +55,7 @@ function requireAuth(req: any, res: any): string | null {
 router.get(
   "/parties",
   h(async (_req, res) => {
-    res.json(await listParties());
+    res.json((await listParties()).filter(party => !party.party.startsWith("sandbox")));
   }),
 );
 
