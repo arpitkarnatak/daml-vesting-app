@@ -1,6 +1,6 @@
 module VestingAgreement where
 
-import DA.Time (addRelTime)
+import DA.Time (addRelTime, seconds)
 
 import VestingSchedule
 import CantonCoin
@@ -20,6 +20,10 @@ template VestingProposal
     ensure
       not (null schedule.tranches)
       && all (\t -> t.amount > 0.0) schedule.tranches
+      -- A negative cliff or tranche offset is nonsensical: `RelTime` can be
+      -- negative, so reject any grant whose durations point backwards in time.
+      && schedule.cliffDuration >= seconds 0
+      && all (\t -> t.offset >= seconds 0) schedule.tranches
 
     choice Accept : ContractId VestingAgreement
       controller employee

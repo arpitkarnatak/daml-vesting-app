@@ -1,0 +1,14 @@
+sdk-version: 3.5.2
+name: vesting-tests
+source: daml
+version: 1.0.1
+# Kept as a separate package from the template package `vesting` so the test
+# DAR is never deployed to a validator (see multi-package.yaml). The templates
+# under test are pulled in as a data-dependency on the built `vesting` DAR;
+# `daml build`/`daml test` orchestrated via multi-package.yaml rebuild it first.
+dependencies:
+  - daml-prim
+  - daml-stdlib
+  - daml-script
+data-dependencies:
+  - ../.daml/dist/vesting-1.0.1.dar

@@ -1,4 +1,4 @@
-import { VestingAgreement as VA, CantonCoin as CC, VestingSchedule as VS } from "@daml.js/vesting-1.0.0";
+import { VestingAgreement as VA, CantonCoin as CC, VestingSchedule as VS } from "@daml.js/vesting-1.0.1";
 
 // ---------------------------------------------------------------------------
 // Domain mapping: REST DTOs  <->  Daml payloads for the `vesting` package.

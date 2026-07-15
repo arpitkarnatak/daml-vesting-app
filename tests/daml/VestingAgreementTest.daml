@@ -1,0 +1,262 @@
+module VestingAgreementTest where
+
+import Daml.Script
+import DA.Assert ((===))
+import DA.Date (date, Month(..))
+import DA.Time (seconds)
+
+import VestingSchedule
+import VestingAgreement
+import CantonCoin()
+
+-- Parties reused across the scenarios: `company` and `employee` are the two
+-- signatories of an agreement; `stranger` is an unauthorized third party used
+-- to prove the choices reject anyone who is not their controller.
+data Parties = Parties with
+  company : Party
+  employee : Party
+  stranger : Party
+
+allocParties : Script Parties
+allocParties = do
+  company <- allocateParty "Company"
+  employee <- allocateParty "Employee"
+  stranger <- allocateParty "Stranger"
+  pure (Parties company employee stranger)
+
+-- A well-formed schedule that satisfies every `ensure` clause. Cliff (50s) is
+-- shorter than the first tranche (100s) so tranche timing, not the cliff, is
+-- the binding constraint in the happy path.
+validSchedule : VestingSchedule
+validSchedule = VestingSchedule with
+  startDate = date 2024 Jan 1
+  cliffDuration = seconds 50
+  tranches =
+    [ Tranche with offset = seconds 100, amount = 10.0
+    , Tranche with offset = seconds 200, amount = 20.0
+    ]
+
+mkProposal : Parties -> VestingSchedule -> VestingProposal
+mkProposal p sched = VestingProposal with
+  company = p.company
+  employee = p.employee
+  schedule = sched
+
+-- Propose (as company) then Accept (as employee); returns the live agreement.
+proposeAndAccept : Parties -> VestingSchedule -> Script (ContractId VestingAgreement)
+proposeAndAccept p sched = do
+  propId <- submit p.company do createCmd (mkProposal p sched)
+  submit p.employee do exerciseCmd propId Accept
+
+------------------------------------------------------------------------------
+-- VestingProposal `ensure` — a conjunction of four clauses. Each clause is
+-- broken in isolation (all others satisfied) so we know which one is enforced,
+-- plus the all-satisfied case that must create successfully.
+------------------------------------------------------------------------------
+
+-- All four clauses hold -> the proposal is created.
+testProposalValid : Script ()
+testProposalValid = script do
+  p <- allocParties
+  _ <- submit p.company do createCmd (mkProposal p validSchedule)
+  pure ()
+
+-- `not (null tranches)` violated: an empty tranche list is rejected.
+testProposalEmptyTranches : Script ()
+testProposalEmptyTranches = script do
+  p <- allocParties
+  let sched = validSchedule with tranches = []
+  submitMustFail p.company do createCmd (mkProposal p sched)
+
+-- `all amount > 0` violated by a zero-amount tranche.
+testProposalZeroAmount : Script ()
+testProposalZeroAmount = script do
+  p <- allocParties
+  let sched = validSchedule with
+        tranches = [Tranche with offset = seconds 100, amount = 0.0]
+  submitMustFail p.company do createCmd (mkProposal p sched)
+
+-- `all amount > 0` violated by a negative-amount tranche.
+testProposalNegativeAmount : Script ()
+testProposalNegativeAmount = script do
+  p <- allocParties
+  let sched = validSchedule with
+        tranches = [Tranche with offset = seconds 100, amount = -5.0]
+  submitMustFail p.company do createCmd (mkProposal p sched)
+
+-- `cliffDuration >= 0` violated by a negative cliff.
+testProposalNegativeCliff : Script ()
+testProposalNegativeCliff = script do
+  p <- allocParties
+  let sched = validSchedule with cliffDuration = seconds (-1)
+  submitMustFail p.company do createCmd (mkProposal p sched)
+
+-- `all offset >= 0` violated by a negative tranche offset.
+testProposalNegativeOffset : Script ()
+testProposalNegativeOffset = script do
+  p <- allocParties
+  let sched = validSchedule with
+        tranches = [Tranche with offset = seconds (-1), amount = 10.0]
+  submitMustFail p.company do createCmd (mkProposal p sched)
+
+------------------------------------------------------------------------------
+-- Accept / Reject — both are controlled by `employee`. Proves the controller
+-- can act and that neither the company nor an unrelated party can.
+------------------------------------------------------------------------------
+
+-- Employee accepts -> agreement exists with the same terms and no releases yet.
+testEmployeeAccepts : Script ()
+testEmployeeAccepts = script do
+  p <- allocParties
+  agrId <- proposeAndAccept p validSchedule
+  Some agr <- queryContractId p.employee agrId
+  agr.company === p.company
+  agr.employee === p.employee
+  agr.schedule === validSchedule
+  agr.released === []
+
+-- The company is only an observer of the proposal, not the Accept controller.
+testCompanyCannotAccept : Script ()
+testCompanyCannotAccept = script do
+  p <- allocParties
+  propId <- submit p.company do createCmd (mkProposal p validSchedule)
+  submitMustFail p.company do exerciseCmd propId Accept
+
+-- A party with no relationship to the proposal cannot accept it.
+testStrangerCannotAccept : Script ()
+testStrangerCannotAccept = script do
+  p <- allocParties
+  propId <- submit p.company do createCmd (mkProposal p validSchedule)
+  submitMustFail p.stranger do exerciseCmd propId Accept
+
+-- Employee rejects -> the proposal is archived and no agreement is produced.
+testEmployeeRejects : Script ()
+testEmployeeRejects = script do
+  p <- allocParties
+  propId <- submit p.company do createCmd (mkProposal p validSchedule)
+  submit p.employee do exerciseCmd propId Reject
+  None <- queryContractId p.employee propId
+  pure ()
+
+-- A stranger cannot reject the proposal either.
+testStrangerCannotReject : Script ()
+testStrangerCannotReject = script do
+  p <- allocParties
+  propId <- submit p.company do createCmd (mkProposal p validSchedule)
+  submitMustFail p.stranger do exerciseCmd propId Reject
+
+------------------------------------------------------------------------------
+-- ReleaseTranche — guards, in order: (1) index not already released,
+-- (2) index valid, (3) now >= cliffTime, (4) now >= unlockTime. Because the
+-- guards short-circuit, we cover the reachable leaves of that decision tree
+-- rather than every unreachable boolean combination.
+------------------------------------------------------------------------------
+
+-- (3) & (4) both false: right after Accept, nothing has vested.
+testReleaseBeforeCliffAndVest : Script ()
+testReleaseBeforeCliffAndVest = script do
+  p <- allocParties
+  agrId <- proposeAndAccept p validSchedule
+  -- no time passes: now == startTime, cliff (50s) not reached.
+  submitMustFail p.employee do exerciseCmd agrId ReleaseTranche with trancheIndex = 0
+
+-- (3) false, (4) true: cliff (200s) outlasts the tranche (50s); at +100s the
+-- tranche has vested but the cliff has not passed.
+testReleaseCliffNotReached : Script ()
+testReleaseCliffNotReached = script do
+  p <- allocParties
+  let sched = VestingSchedule with
+        startDate = date 2024 Jan 1
+        cliffDuration = seconds 200
+        tranches = [Tranche with offset = seconds 50, amount = 10.0]
+  agrId <- proposeAndAccept p sched
+  passTime (seconds 100)
+  submitMustFail p.employee do exerciseCmd agrId ReleaseTranche with trancheIndex = 0
+
+-- (3) true, (4) false: cliff (50s) passed but the tranche (200s) has not vested.
+testReleaseTrancheNotVested : Script ()
+testReleaseTrancheNotVested = script do
+  p <- allocParties
+  let sched = VestingSchedule with
+        startDate = date 2024 Jan 1
+        cliffDuration = seconds 50
+        tranches = [Tranche with offset = seconds 200, amount = 10.0]
+  agrId <- proposeAndAccept p sched
+  passTime (seconds 100)
+  submitMustFail p.employee do exerciseCmd agrId ReleaseTranche with trancheIndex = 0
+
+-- (3) & (4) true: cliff and tranche both elapsed -> a coin is minted to the
+-- employee and the tranche index is recorded as released.
+testReleaseSuccess : Script ()
+testReleaseSuccess = script do
+  p <- allocParties
+  agrId <- proposeAndAccept p validSchedule
+  passTime (seconds 100)  -- cliff 50s and tranche-0 100s both reached.
+  (newAgrId, coinId) <- submit p.employee do
+    exerciseCmd agrId ReleaseTranche with trancheIndex = 0
+  Some coin <- queryContractId p.employee coinId
+  coin.issuer === p.company
+  coin.owner === p.employee
+  coin.amount === 10.0
+  Some agr <- queryContractId p.employee newAgrId
+  agr.released === [0]
+
+-- (2) false: an out-of-range index aborts even once everything has vested.
+testReleaseInvalidIndex : Script ()
+testReleaseInvalidIndex = script do
+  p <- allocParties
+  agrId <- proposeAndAccept p validSchedule
+  passTime (seconds 300)  -- everything vested.
+  submitMustFail p.employee do exerciseCmd agrId ReleaseTranche with trancheIndex = 5
+
+-- A negative index is likewise invalid.
+testReleaseNegativeIndex : Script ()
+testReleaseNegativeIndex = script do
+  p <- allocParties
+  agrId <- proposeAndAccept p validSchedule
+  passTime (seconds 300)
+  submitMustFail p.employee do exerciseCmd agrId ReleaseTranche with trancheIndex = -1
+
+-- (1) false: releasing the same tranche twice fails on the second attempt.
+testReleaseAlreadyReleased : Script ()
+testReleaseAlreadyReleased = script do
+  p <- allocParties
+  agrId <- proposeAndAccept p validSchedule
+  passTime (seconds 100)
+  (newAgrId, _) <- submit p.employee do
+    exerciseCmd agrId ReleaseTranche with trancheIndex = 0
+  submitMustFail p.employee do
+    exerciseCmd newAgrId ReleaseTranche with trancheIndex = 0
+
+-- Distinct tranches can each be released once their own offset elapses; the
+-- `released` list accumulates both indices.
+testReleaseMultipleTranches : Script ()
+testReleaseMultipleTranches = script do
+  p <- allocParties
+  agrId <- proposeAndAccept p validSchedule
+  passTime (seconds 100)  -- tranche 0 (100s) vested; tranche 1 (200s) not yet.
+  (agrId1, _) <- submit p.employee do
+    exerciseCmd agrId ReleaseTranche with trancheIndex = 0
+  passTime (seconds 100)  -- now +200s: tranche 1 vested.
+  (agrId2, coin1) <- submit p.employee do
+    exerciseCmd agrId1 ReleaseTranche with trancheIndex = 1
+  Some coin <- queryContractId p.employee coin1
+  coin.amount === 20.0
+  Some agr <- queryContractId p.employee agrId2
+  agr.released === [1, 0]
+
+-- The company is a signatory but not the ReleaseTranche controller.
+testCompanyCannotRelease : Script ()
+testCompanyCannotRelease = script do
+  p <- allocParties
+  agrId <- proposeAndAccept p validSchedule
+  passTime (seconds 100)
+  submitMustFail p.company do exerciseCmd agrId ReleaseTranche with trancheIndex = 0
+
+-- A stranger cannot release a tranche.
+testStrangerCannotRelease : Script ()
+testStrangerCannotRelease = script do
+  p <- allocParties
+  agrId <- proposeAndAccept p validSchedule
+  passTime (seconds 100)
+  submitMustFail p.stranger do exerciseCmd agrId ReleaseTranche with trancheIndex = 0

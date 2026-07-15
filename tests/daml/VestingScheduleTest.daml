@@ -1,0 +1,57 @@
+module VestingScheduleTest where
+
+import Daml.Script
+import DA.Assert ((===))
+import DA.Date (date, Month(..))
+import DA.Time (seconds)
+
+import VestingSchedule
+
+-- VestingSchedule has no template/choices; the only behaviour to exercise is
+-- `totalShares`, which sums the `amount` of every tranche. These are pure fuzz
+-- cases over that arithmetic: empty, single, many, decimals and large sums.
+
+mkSchedule : [Tranche] -> VestingSchedule
+mkSchedule ts = VestingSchedule with
+  startDate = date 2024 Jan 1
+  cliffDuration = seconds 0
+  tranches = ts
+
+-- No tranches -> nothing granted.
+testTotalSharesEmpty : Script ()
+testTotalSharesEmpty = script do
+  totalShares (mkSchedule []) === 0.0
+
+-- A single tranche totals to exactly its amount.
+testTotalSharesSingle : Script ()
+testTotalSharesSingle = script do
+  totalShares (mkSchedule [Tranche with offset = seconds 10, amount = 42.0]) === 42.0
+
+-- Several tranches sum together regardless of their offsets.
+testTotalSharesMultiple : Script ()
+testTotalSharesMultiple = script do
+  let ts =
+        [ Tranche with offset = seconds 10, amount = 10.0
+        , Tranche with offset = seconds 20, amount = 20.5
+        , Tranche with offset = seconds 30, amount = 4.25
+        ]
+  totalShares (mkSchedule ts) === 34.75
+
+-- Fractional amounts add without precision loss at Decimal's scale.
+testTotalSharesDecimals : Script ()
+testTotalSharesDecimals = script do
+  let ts =
+        [ Tranche with offset = seconds 10, amount = 0.0000000001
+        , Tranche with offset = seconds 20, amount = 0.0000000002
+        ]
+  totalShares (mkSchedule ts) === 0.0000000003
+
+-- Large amounts sum without overflow (Decimal holds 38 digits).
+testTotalSharesLarge : Script ()
+testTotalSharesLarge = script do
+  let ts =
+        [ Tranche with offset = seconds 10, amount = 1000000000.0
+        , Tranche with offset = seconds 20, amount = 2000000000.0
+        , Tranche with offset = seconds 30, amount = 3000000000.0
+        ]
+  totalShares (mkSchedule ts) === 6000000000.0
