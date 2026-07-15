@@ -59,6 +59,27 @@ async function req<T>(path: string, init?: RequestInit, token?: string): Promise
   return (text ? JSON.parse(text) : undefined) as T;
 }
 
+// Ledger errors arrive as a JSON blob (optionally wrapped again in `detail`).
+// Dig out the human-readable reason -- e.g. the DAML assertion message
+// "cliff has not been reached yet" -- falling back to the raw text.
+export function friendlyLedgerError(raw: unknown): string {
+  const text = raw instanceof Error ? raw.message : String(raw ?? "");
+  try {
+    const outer = JSON.parse(text);
+    const inner =
+      typeof outer.detail === "string" ? JSON.parse(outer.detail) : outer.detail ?? outer;
+    const cause: string | undefined = inner?.cause ?? outer?.cause;
+    if (cause) {
+      // ...(error category 9): cliff has not been reached yet  ->  the tail
+      const m = cause.match(/\):\s*(.+)$/);
+      return (m ? m[1] : cause).trim();
+    }
+    return outer.detail ?? outer.error ?? text;
+  } catch {
+    return text;
+  }
+}
+
 // Every call below that acts "as" a party takes that party's token, never a
 // party name -- the backend derives the acting party from the token, so a
 // caller can never simply name a party it doesn't hold a token for.

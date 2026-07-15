@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   api,
+  friendlyLedgerError,
   type Agreement,
   type Coin,
   type PartyDetails,
   type Proposal,
 } from "./api";
+import { Toaster, toast } from "@/components/ui/toast";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -51,7 +53,6 @@ export function App() {
   // is not the same as holding its credential.
   const [authTokens, setAuthTokens] = useState<Record<string, string>>(loadStoredTokens);
   const [acting, setActing] = useState<string>(""); // the logged-in party whose view we show
-  const [error, setError] = useState<string | null>(null);
 
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [agreements, setAgreements] = useState<Agreement[]>([]);
@@ -59,10 +60,9 @@ export function App() {
 
   const guard = useCallback(async (fn: () => Promise<void>) => {
     try {
-      setError(null);
       await fn();
     } catch (e: any) {
-      setError(e?.message ?? String(e));
+      toast(friendlyLedgerError(e), { title: "Action failed", variant: "error" });
     }
   }, []);
 
@@ -125,11 +125,7 @@ export function App() {
         </p>
       </header>
 
-      {error && (
-        <div className="mb-6 rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive whitespace-pre-wrap">
-          {error}
-        </div>
-      )}
+      <Toaster />
 
       <div className="space-y-6">
         <PartyBar
@@ -287,25 +283,9 @@ export function App() {
                 none visible to acting party
               </p>
             )}
-            <div className="grid gap-3 sm:grid-cols-2">
-              {coins.map((c) => (
-                <Card key={c.contractId} className="shadow-none">
-                  <CardContent className="p-4">
-                    <div className="flex items-baseline gap-2">
-                      <span className="text-2xl font-bold text-primary">
-                        {c.amount}
-                      </span>
-                      <span className="text-sm text-muted-foreground">coin</span>
-                    </div>
-                    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-                      <Badge variant="outline">owner {short(c.owner)}</Badge>
-                      <Badge variant="outline">issuer {short(c.issuer)}</Badge>
-                    </div>
-                    <ContractId id={c.contractId} />
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
+            {coins.map((c) => (
+              <CoinRow key={c.contractId} coin={c} acting={acting} />
+            ))}
           </CardContent>
         </Card>
       </div>
@@ -327,9 +307,9 @@ function PartyBar(props: {
       <CardHeader>
         <CardTitle>Party</CardTitle>
         <CardDescription>
-          Acting as a party requires holding its token (issued once, when it's
+          Acting as a party requires holding its Auth token (issued once, when it's
           allocated in this browser). You can't switch to a party you don't hold
-          a token for.
+          an auth token for.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -530,10 +510,43 @@ function PartyRow({ company, employee }: { company: string; employee: string }) 
   );
 }
 
+function CoinRow({ coin, acting }: { coin: Coin; acting: string }) {
+  const isOwner = acting === coin.owner;
+  const isIssuer = acting === coin.issuer;
+  // Received (acting is owner) => green; sent (acting is issuer) => red.
+  const amountClass = isOwner
+    ? "text-green-600 dark:text-green-500"
+    : isIssuer
+      ? "text-red-600 dark:text-red-500"
+      : "text-primary";
+  const highlight = "font-semibold text-blue-600 dark:text-blue-400";
+
+  return (
+    <Card className="shadow-none">
+      <CardContent className="p-4">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
+          <span className={`font-mono text-xs ${isIssuer ? highlight : ""}`}>
+            {short(coin.issuer)}
+          </span>
+          <span className="text-muted-foreground">→</span>
+          <span className={`font-mono text-xs ${isOwner ? highlight : ""}`}>
+            {short(coin.owner)}
+          </span>
+          <span className={`ml-auto text-lg font-bold ${amountClass}`}>
+            {isOwner ? "+" : isIssuer ? "−" : ""}
+            {coin.amount}
+          </span>
+        </div>
+        <ContractId id={coin.contractId} />
+      </CardContent>
+    </Card>
+  );
+}
+
 function ContractId({ id }: { id: string }) {
   return (
     <div className="break-all font-mono text-xs text-muted-foreground/70">
-      {id}
+      {short(id)}
     </div>
   );
 }
